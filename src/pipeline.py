@@ -56,8 +56,8 @@ def generate_executive_summary(
 
 ### Monthly Analysis
 - **Average Monthly SSI Rate**: {temporal_monthly['ssi_rate'].mean():.4f}
-- **Trend Direction**: {trend_results['direction'].upper()}
-- **Trend Significance**: {'Statistically significant' if trend_results['significant'] else 'Not statistically significant'} (p={trend_results['p_value']:.4f})
+- **Trend Direction**: {trend_results.get('direction', 'unknown').upper()}
+- **Trend Significance**: {'Statistically significant' if trend_results.get('significant', False) else 'Not statistically significant'} (p={trend_results.get('p_value', 1.0):.4f})
 - **Outlier Periods Detected**: {len(outliers)} period(s)
 """
     

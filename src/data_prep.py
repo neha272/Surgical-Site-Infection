@@ -33,15 +33,38 @@ def find_csv_file() -> Optional[Path]:
 def detect_column(
     df: pd.DataFrame, patterns: list, column_type: str
 ) -> Optional[str]:
-    """Detect column name matching given patterns (case-insensitive)."""
+    """Detect column name matching given patterns (case-insensitive).
+    
+    Prioritizes exact matches and more specific patterns first.
+    """
     df_cols_lower = [col.lower() for col in df.columns]
     
+    # First pass: look for exact matches (case-insensitive)
     for pattern in patterns:
+        pattern_lower = pattern.lower()
         for idx, col_lower in enumerate(df_cols_lower):
-            if pattern.lower() in col_lower:
+            if col_lower == pattern_lower:
                 matched_col = df.columns[idx]
-                logger.info(f"Detected {column_type} column: {matched_col}")
+                logger.info(f"Detected {column_type} column (exact match): {matched_col}")
                 return matched_col
+    
+    # Second pass: look for substring matches (prioritize patterns in order)
+    for pattern in patterns:
+        pattern_lower = pattern.lower()
+        for idx, col_lower in enumerate(df_cols_lower):
+            if pattern_lower in col_lower:
+                matched_col = df.columns[idx]
+                # For volume columns, verify it's numeric and has reasonable values
+                if column_type == "volume":
+                    if pd.api.types.is_numeric_dtype(df[matched_col]):
+                        # Check if values are reasonable (positive numbers)
+                        sample_values = df[matched_col].dropna()
+                        if len(sample_values) > 0 and (sample_values > 0).any():
+                            logger.info(f"Detected {column_type} column: {matched_col}")
+                            return matched_col
+                else:
+                    logger.info(f"Detected {column_type} column: {matched_col}")
+                    return matched_col
     
     logger.warning(f"Could not detect {column_type} column using patterns: {patterns}")
     return None
@@ -89,9 +112,32 @@ def expand_aggregated_data(
     """
     expanded_rows = []
     
-    for idx, row in df.iterrows():
+    # Filter out rows with missing or invalid volume/infection data
+    initial_len = len(df)
+    df_clean = df.copy()
+    df_clean = df_clean.dropna(subset=[volume_col, infection_col])
+    
+    # Convert to numeric, coercing errors to NaN
+    df_clean[volume_col] = pd.to_numeric(df_clean[volume_col], errors='coerce')
+    df_clean[infection_col] = pd.to_numeric(df_clean[infection_col], errors='coerce')
+    
+    # Filter out rows where volume or infections are NaN, negative, or zero volume
+    df_clean = df_clean[
+        (df_clean[volume_col].notna()) & 
+        (df_clean[volume_col] > 0) &
+        (df_clean[infection_col].notna()) &
+        (df_clean[infection_col] >= 0)
+    ]
+    
+    if len(df_clean) < initial_len:
+        logger.warning(f"Dropped {initial_len - len(df_clean)} rows with invalid volume/infection data")
+    
+    for idx, row in df_clean.iterrows():
         volume = int(row[volume_col])
         infections = int(row[infection_col])
+        
+        # Ensure infections doesn't exceed volume
+        infections = min(infections, volume)
         
         # Create individual records
         for i in range(volume):
@@ -101,7 +147,7 @@ def expand_aggregated_data(
             expanded_rows.append(record)
     
     expanded_df = pd.DataFrame(expanded_rows)
-    logger.info(f"Expanded {len(df)} aggregated rows to {len(expanded_df)} individual records")
+    logger.info(f"Expanded {len(df_clean)} aggregated rows to {len(expanded_df)} individual records")
     return expanded_df
 
 
@@ -126,6 +172,7 @@ def prepare_data(csv_path: Optional[Path] = None) -> pd.DataFrame:
     ssi_col = detect_column(df, SSI_COLUMN_PATTERNS, "SSI/infection")
     category_col = detect_column(df, CATEGORY_COLUMN_PATTERNS, "category")
     volume_col = detect_column(df, VOLUME_COLUMN_PATTERNS, "volume")
+    year_col = detect_column(df, ["year"], "year")  # Detect Year before expansion
     
     # Check if data is aggregated (has volume and infection count columns)
     is_aggregated = volume_col is not None and ssi_col is not None
@@ -139,24 +186,29 @@ def prepare_data(csv_path: Optional[Path] = None) -> pd.DataFrame:
         
         if is_count_based:
             logger.info("Detected aggregated data format. Expanding to individual records...")
-            # Expand aggregated data
+            # Expand aggregated data (Year column will be preserved in each row)
             df = expand_aggregated_data(df, volume_col, ssi_col, category_col)
             # After expansion, ssi_col now contains 0/1 flags
     
     # Handle date column
     if date_col:
         df["surgery_date"] = parse_date_column(df[date_col])
+    elif year_col:
+        logger.info("No date column found, using Year column to create synthetic dates")
+        # Ensure Year is numeric and handle any NaN values
+        df[year_col] = pd.to_numeric(df[year_col], errors='coerce')
+        # Create dates from Year (use mid-year date for each year)
+        df["surgery_date"] = pd.to_datetime(
+            df[year_col].astype(str).replace('nan', '2017') + "-06-15", 
+            errors="coerce"
+        )
+        # Fill any remaining NaT with a default date
+        if df["surgery_date"].isna().any():
+            default_year = int(df[year_col].median()) if df[year_col].notna().any() else 2017
+            df["surgery_date"] = df["surgery_date"].fillna(pd.Timestamp(f"{default_year}-06-15"))
     else:
-        # Try to use Year column if available
-        year_col = detect_column(df, ["year"], "year")
-        if year_col:
-            logger.info("No date column found, using Year column to create synthetic dates")
-            df["surgery_date"] = pd.to_datetime(
-                df[year_col].astype(str) + "-06-15", errors="coerce"
-            )
-        else:
-            logger.warning("No date or year column found. Creating placeholder dates.")
-            df["surgery_date"] = pd.Timestamp("2017-06-15")
+        logger.warning("No date or year column found. Creating placeholder dates.")
+        df["surgery_date"] = pd.Timestamp("2017-06-15")
     
     # Handle SSI flag
     if ssi_col:

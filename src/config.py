@@ -27,7 +27,7 @@ CATEGORY_COLUMN_PATTERNS = [
 ]
 
 VOLUME_COLUMN_PATTERNS = [
-    "volume", "count", "procedure_count", "total", "n"
+    "procedure_count", "volume", "total", "n", "count"
 ]
 
 # Analysis parameters

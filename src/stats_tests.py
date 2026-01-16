@@ -97,15 +97,27 @@ def chi_square_test(
             "error": "Invalid contingency table",
         }
     
-    chi2, p_value, dof, expected = stats.chi2_contingency(contingency)
-    
-    return {
-        "statistic": chi2,
-        "p_value": p_value,
-        "degrees_of_freedom": dof,
-        "significant": p_value < ALPHA,
-        "expected": expected.tolist(),
-    }
+    # Check for zero expected frequencies (chi-square test requires all expected > 0)
+    try:
+        chi2, p_value, dof, expected = stats.chi2_contingency(contingency)
+        
+        return {
+            "statistic": chi2,
+            "p_value": p_value,
+            "degrees_of_freedom": dof,
+            "significant": p_value < ALPHA,
+            "expected": expected.tolist(),
+        }
+    except ValueError as e:
+        # Handle case where expected frequencies are zero
+        return {
+            "statistic": np.nan,
+            "p_value": 1.0,
+            "degrees_of_freedom": 1,
+            "significant": False,
+            "error": f"Chi-square test cannot be performed: {str(e)}",
+            "expected": None,
+        }
 
 
 def test_pre_post_comparison(df: pd.DataFrame) -> Dict:
